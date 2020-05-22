@@ -1,0 +1,164 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
+
+#define MUSTERI_SINIRI 10       
+#define KESME_SURESI 1          
+
+/* semaforlar */
+sem_t berberler;               
+sem_t musteriler;               
+sem_t mutex;                    
+
+/* fonksiyonlar */
+void ip_berber(void* sayi);
+void ip_musteri(void* sayi);
+void bekle();
+
+/* deðiþkenler */
+int berberKoltukSayisi = 0;          
+int musteriSayisi = 0;         
+int sandalyeSayisi = 0;         
+int bosSandalyeSayisi = 0;      
+int hizmetEdilecekMusteri = 0;  
+int oturulacakSandalye = 0;     
+int* koltuk;                    
+
+int main(int argc, char** args)
+{
+    if (argc != 2)
+    {
+        printf("\nKullaným Hatasý!\nKullaným Þekli:\t uyuyan-berber <Müþteri Sayýsý> \n\n");
+        return EXIT_FAILURE;
+    }
+
+    musteriSayisi = atoi(args[1]);
+    sandalyeSayisi = 5;
+    berberKoltukSayisi = 1;
+    bosSandalyeSayisi = sandalyeSayisi;
+    koltuk = (int*) malloc(sizeof(int) * sandalyeSayisi);
+
+    if (musteriSayisi > MUSTERI_SINIRI)
+    {
+        printf("\nMüþteri sýnýrý: %d\n\n", MUSTERI_SINIRI);
+        return EXIT_FAILURE;
+    }
+
+    printf("\n\nGirilen Müþteri Sayýsý:\t\t%d", musteriSayisi);
+    printf("\nGirilen Sandalye Sayýsý:\t%d", sandalyeSayisi);
+    printf("\nGirilen Berber Koltuðu Sayýsý:\t%d\n\n", berberKoltukSayisi);
+
+    pthread_t berber[berberKoltukSayisi], musteri[musteriSayisi]; /* iþ parçalarý */
+
+    /* semaforlarýn oluþturulmasý */
+    sem_init(&berberler, 0, 0);
+    sem_init(&musteriler, 0, 0);
+    sem_init(&mutex, 0, 1);
+
+    printf("\nBerber dükkaný açýldý.\n\n");
+
+    /* berber iþ parçalarýnýn oluþturulmasý */
+    for (int i = 0; i < berberKoltukSayisi; i++)
+    {
+        pthread_create(&berber[i], NULL, (void*)ip_berber, (void*)&i);
+        sleep(1);
+    }
+
+    /* müþteri iþ parçalarýnýn oluþturulmasý */
+    for (int i = 0; i < musteriSayisi; i++)
+    {
+        pthread_create(&musteri[i], NULL, (void*)ip_musteri, (void*)&i);
+        bekle();    /* müþterileri rastgele aralýklarda oluþturmak için */
+    }
+
+    /* dükkaný kapatmadan önce tüm müþteriler ile ilgilen */
+    for (int i = 0; i < musteriSayisi; i++)
+    {
+        pthread_join(musteri[i], NULL);
+    }
+
+
+    printf("\nTüm müþterilere hizmet verildi. Berber dükkaný kapandý.\n\n");
+
+    return EXIT_SUCCESS;
+}
+
+void ip_berber(void* sayi)
+{
+    int s = *(int*)sayi + 1;
+    int sonrakiMusteri, musteri_kimligi;
+
+    printf("[Berber: %d]\tdükkana geldi.\n", s);
+
+    while (1)
+    {
+        if (!musteri_kimligi)
+        {
+            printf("[Berber: %d]\tuyumaya gitti.\n\n", s);
+        }
+
+        sem_wait(&berberler); 
+        sem_wait(&mutex);       
+
+        hizmetEdilecekMusteri = (++hizmetEdilecekMusteri) % sandalyeSayisi;
+        sonrakiMusteri = hizmetEdilecekMusteri;
+        musteri_kimligi = koltuk[sonrakiMusteri];
+        koltuk[sonrakiMusteri] = pthread_self();
+
+        sem_post(&mutex);       
+        sem_post(&musteriler);  
+
+        printf("[Berber: %d]\t%d. müþterinin saçýný kesmeye baþladý.\n\n", s, musteri_kimligi);
+        sleep(KESME_SURESI);
+        printf("[Berber: %d]\t%d. müþterinin saçýný kesmeyi bitirdi.\n\n", s, musteri_kimligi);
+    }
+}
+
+void ip_musteri(void* sayi)
+{
+    int s = *(int*)sayi + 1;
+    int oturulanSandalye, berber_kimligi;
+
+    sem_wait(&mutex);   /* koltuðu korumak için eriþimi kilitle */
+
+    printf("[Müþteri: %d]\tdükkana geldi.\n", s);
+
+    /* bekleme odasýnda boþ sandalye varsa */
+    if (bosSandalyeSayisi > 0)
+    {
+        bosSandalyeSayisi--;
+
+        printf("[Müþteri: %d]\tbekleme salonunda bekliyor.\n\n", s);
+
+        /* bekleme salonundan bir sandalye seçip otur */
+        oturulacakSandalye = (++oturulacakSandalye) % sandalyeSayisi;
+        oturulanSandalye = oturulacakSandalye;
+        koltuk[oturulanSandalye] = s;
+
+        sem_post(&mutex);           /* koltuða eriþim kilidini kaldýr */
+        sem_post(&berberler);       /* uygun berberi uyandýr */
+
+        sem_wait(&musteriler);      /* bekleyen müþteriler kuyruðuna katýl */
+        sem_wait(&mutex);           /* koltuðu korumak için eriþimi kilitle */
+
+        /* berber koltuðuna geç */
+        berber_kimligi = koltuk[oturulanSandalye];
+        bosSandalyeSayisi++;
+
+        sem_post(&mutex);           /* koltuða eriþim kilidini kaldýr */
+    }
+    else
+    {
+        sem_post(&mutex);           /* koltuða eriþim kilidini kaldýr */
+        printf("[Müþteri: %d]\tbekleme salonunda yer bulamadý. Dükkandan ayrýlýyor.\n\n", s);
+    }
+    pthread_exit(0);
+}
+
+void bekle()
+{
+    srand((unsigned int)time(NULL));
+    usleep(rand() % (250000 - 50000 + 1) + 50000); /* 50000 - 250000 ms */
+}
